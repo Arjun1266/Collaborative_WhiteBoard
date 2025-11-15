@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<h2>Signup</h2>
+<input id="su_user" placeholder="Username"><br>
+<input id="su_pass" type="password" placeholder="Password"><br>
+<button onclick="signup()">Sign Up</button>
+
+<h2>Login</h2>
+<input id="li_user" placeholder="Username"><br>
+<input id="li_pass" type="password" placeholder="Password"><br>
+<button onclick="login()">Login</button>
+
+<script>
+    async function signup() {
+        let res = await fetch("/auth/signup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                username: su_user.value,
+                password: su_pass.value
+            })
+        });
+
+        alert(await res.text());
+    }
+
+    async function login() {
+        let res = await fetch("/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                username: li_user.value,
+                password: li_pass.value
+            })
+        });
+
+        let token = await res.text();
+
+        if (!res.ok) {
+            alert("Login Failed: " + token);
+            return;
+        }
+
+        localStorage.setItem("token", token);
+
+        window.location.href = "/index.html?room=test";
+    }
+</script>
+
+</body>
+</html>

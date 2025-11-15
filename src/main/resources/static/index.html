@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Collaborative Whiteboard</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+        :root {
+            --toolbar-bg: #f3f4f6;
+            --btn-bg: #0b5fff;
+            --btn-hover: #0849cc;
+        }
+
+        body { margin: 0; font-family: Arial, Helvetica, sans-serif; height: 100vh; overflow: hidden; }
+        #toolbar {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            z-index: 30;
+            background: var(--toolbar-bg);
+            padding: 10px;
+            border-radius: 8px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+            user-select: none;
+        }
+
+        #toolbar input[type="color"] { width: 36px; height: 36px; padding: 0; border: none; background: transparent; }
+        #toolbar input[type="range"] { width: 120px; }
+        #toolbar button {
+            padding: 6px 10px;
+            border-radius: 6px;
+            border: none;
+            background: var(--btn-bg);
+            color: white;
+            cursor: pointer;
+        }
+        #toolbar button:hover { background: var(--btn-hover); }
+
+        #meta {
+            font-size: 12px;
+            color: #333;
+            margin-left: 6px;
+        }
+
+        #board { display:block; position: absolute; top:0; left:0; width:100%; height:100%; background: #ffffff; touch-action: none; }
+    </style>
+</head>
+<body>
+
+<div id="toolbar">
+    <button id="undoBtn">Undo</button>
+    <button id="clearBtn">Clear</button>
+
+    <label style="display:flex;align-items:center;gap:6px">
+        Color
+        <input id="colorPicker" type="color" value="#000000">
+    </label>
+
+    <label style="display:flex;align-items:center;gap:6px">
+        Size
+        <input id="sizePicker" type="range" min="1" max="40" step="1" value="3">
+        <span id="sizeLabel">3</span>
+    </label>
+
+    <div id="meta">Room: <strong id="roomLabel"></strong></div>
+</div>
+
+<canvas id="board"></canvas>
+
+<script>
+    /* ============================
+       Initialization & Variables
+       ============================ */
+
+    const canvas = document.getElementById('board');
+    const ctx = canvas.getContext('2d', { willReadFrequently: false });
+    let strokes = []; // array of stroke objects received from server
+    let drawing = false;
+    let lastPoint = null;
+
+    // UI elements
+    const colorPicker = document.getElementById('colorPicker');
+    const sizePicker = document.getElementById('sizePicker');
+    const sizeLabel = document.getElementById('sizeLabel');
+    const undoBtn = document.getElementById('undoBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const roomLabel = document.getElementById('roomLabel');
+
+    let strokeColor = colorPicker.value;
+    let strokeSize = Number(sizePicker.value);
+
+    // room + token
+    const params = new URLSearchParams(window.location.search);
+    const roomId = params.get('room') || 'default';
+    roomLabel.textContent = roomId;
+
+    const token = localStorage.getItem('token');
+    if (!token) {
+        alert('Please login first.');
+        window.location.href = '/login.html';
+    }
+
+    /* ============================
+       WebSocket
+       ============================ */
+
+    const wsUrl = `ws://${location.host}/whiteboard?room=${encodeURIComponent(roomId)}&token=${encodeURIComponent(token)}`;
+    console.log('WS URL =', wsUrl);
+
+    const ws = new WebSocket(wsUrl);
+
+    /* WebSocket lifecycle logging */
+    ws.onopen = () => console.log('WS OPENED');
+    ws.onerror = (err) => console.log('WS ERROR', err);
+    ws.onclose = (ev) => console.log('WS CLOSED', ev.code, ev.reason);
+
+    /* Incoming messages from server */
+    ws.onmessage = (evt) => {
+        try {
+            const data = JSON.parse(evt.data);
+
+            // CLEAR
+            if (data.clear) {
+                strokes = [];
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                return;
+            }
+
+            // UNDO (server sends strokeId)
+            if (data.undo && data.strokeId) {
+                strokes = strokes.filter(s => s.strokeId !== data.strokeId);
+                redraw();
+                return;
+            }
+
+            // Normal stroke - server will include strokeId
+            // Validate required fields exist
+            if (typeof data.x1 !== 'undefined' && typeof data.x2 !== 'undefined') {
+                strokes.push(data);
+                drawStroke(data);
+            } else {
+                console.warn('Unknown WS message:', data);
+            }
+        } catch (e) {
+            console.error('Failed to parse WS message', e, evt.data);
+        }
+    };
+
+    /* ============================
+       Canvas sizing & helpers
+       ============================ */
+
+    function resizeCanvas() {
+        // keep existing drawings by scaling? We'll redraw from strokes array instead
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        canvas.width = w;
+        canvas.height = h;
+        redraw();
+    }
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    function drawStroke(s) {
+        ctx.beginPath();
+        ctx.moveTo(s.x1, s.y1);
+        ctx.lineTo(s.x2, s.y2);
+        ctx.strokeStyle = s.color || '#000';
+        ctx.lineWidth = s.width || 3;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+    }
+
+    function redraw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        for (const s of strokes) drawStroke(s);
+    }
+
+    /* ============================
+       Input handling (mouse + touch)
+       ============================ */
+
+    function getPointerPos(evt) {
+        if (evt.touches && evt.touches.length) {
+            const t = evt.touches[0];
+            return { x: t.clientX, y: t.clientY };
+        } else {
+            return { x: evt.clientX, y: evt.clientY };
+        }
+    }
+
+    /* Start drawing */
+    function pointerDown(evt) {
+        evt.preventDefault();
+        drawing = true;
+        lastPoint = getPointerPos(evt);
+    }
+
+    /* End drawing */
+    function pointerUp(evt) {
+        evt.preventDefault();
+        drawing = false;
+        lastPoint = null;
+    }
+
+    /* Move - send segments to server (we let server be authoritative) */
+    function pointerMove(evt) {
+        if (!drawing || !lastPoint) return;
+        evt.preventDefault();
+        const p = getPointerPos(evt);
+        const payload = {
+            roomId,
+            x1: lastPoint.x,
+            y1: lastPoint.y,
+            x2: p.x,
+            y2: p.y,
+            color: strokeColor,
+            width: strokeSize
+        };
+
+        // send to server - do not draw locally now, wait for server echo
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(payload));
+        } else {
+            // fallback draw locally if no socket (temporary)
+            drawStroke(payload);
+            strokes.push(payload);
+        }
+
+        lastPoint = p;
+    }
+
+    /* Mouse events */
+    canvas.addEventListener('mousedown', pointerDown);
+    canvas.addEventListener('mousemove', pointerMove);
+    canvas.addEventListener('mouseup', pointerUp);
+    canvas.addEventListener('mouseleave', pointerUp);
+
+    /* Touch events */
+    canvas.addEventListener('touchstart', pointerDown, { passive: false });
+    canvas.addEventListener('touchmove', pointerMove, { passive: false });
+    canvas.addEventListener('touchend', pointerUp);
+
+    /* ============================
+       UI control bindings
+       ============================ */
+
+    colorPicker.addEventListener('input', (e) => {
+        strokeColor = e.target.value;
+    });
+    sizePicker.addEventListener('input', (e) => {
+        strokeSize = Number(e.target.value);
+        sizeLabel.textContent = strokeSize;
+    });
+
+    undoBtn.addEventListener('click', () => {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ roomId, undo: true }));
+        } else {
+            console.warn('WebSocket not open for undo');
+        }
+    });
+
+    clearBtn.addEventListener('click', () => {
+        if (confirm('Clear the whole board for everyone?')) {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ roomId, clear: true }));
+            } else {
+                strokes = [];
+                redraw();
+            }
+        }
+    });
+
+    /* ============================
+       Keyboard: Ctrl+Z for undo
+       ============================ */
+    window.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+            e.preventDefault();
+            undoBtn.click();
+        }
+    });
+
+    /* ============================
+       Debug helper: show token and ws state
+       ============================ */
+    console.log('Room:', roomId);
+    console.log('Token present:', !!token);
+    setInterval(() => {
+        if (ws) console.log('WS state:', ws.readyState);
+    }, 6000);
+
+</script>
+</body>
+</html>
